@@ -2,11 +2,11 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>スペースシューター</title>
+  <title>ドットラン</title>
   <style>
     body {
       margin: 0;
-      background: #111;
+      background: #222;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -14,13 +14,16 @@
       font-family: sans-serif;
     }
     canvas {
-      background: #000;
-      border: 2px solid #444;
+      background: #f4f4ef;
+      max-width: 100vw;
+      max-height: 100vh;
+      cursor: crosshair;
+      touch-action: none;
     }
   </style>
 </head>
 <body>
-  <canvas id="game" width="480" height="640"></canvas>
+  <canvas id="game" width="800" height="450"></canvas>
 
   <script>
     // ===== 基本設定 =====
@@ -29,224 +32,853 @@
     const W = canvas.width;
     const H = canvas.height;
 
-    // 押されているキーを記録する
-    const keys = {};
-    document.addEventListener("keydown", (e) => {
-      keys[e.code] = true;
-      if (e.code === "Space") e.preventDefault();
-      // タイトル画面・ゲームオーバー画面でEnterを押すとスタート
-      if (e.code === "Enter" && state !== "playing") startGame();
-    });
-    document.addEventListener("keyup", (e) => {
-      keys[e.code] = false;
-    });
+    const WALL = 20;          // 上下の壁の厚さ
+    const LEFT_WALL = 8;      // 左の壁の厚さ
+    const TOP = WALL;         // 動ける範囲の上端
+    const BOTTOM = H - WALL;  // 動ける範囲の下端
+    const DOT_R = 8;          // 黒い点の半径
+    // 黒い点の速さ（すべて画面に対する速さ）
+    const DOT_SPEED = 2.3;        // クリックしたときの速さ
+    const DOT_SPEED_SLOW = 1.6; // 矢印キーで向きを変えたときの最初の速さ
+    const DOT_SPEED_MAX = 4.2;  // 矢印キーで加速できる上限
+    const HOLD_ACCEL = 0.022;    // 同じ向きのキーを押し続けたときの1フレームごとの加速
+    const TAP_BOOST = 0.4;      // 同じ向きのキーをもう一度押したときの加速
+    const COUNTDOWN = 180;      // スタート前のカウントダウン（60フレーム = 約1秒）
+
+    // ===== ステージ =====
+    //   patterns: 出てくる障害物（この順番で並ぶ。同じステージ内で重複なし）
+    //   speed: 画面が進む速さ        anim: 障害物が動く・回る速さの倍率
+    //   gap:   すき間の広さの倍率    space: 障害物どうしの間隔
+    const STAGES = [
+      { speed: 0.7, anim: 1.0,  gap: 1.0,  space: 230,
+        patterns: [pillars, scatteredBlocks, zigzag] },
+      { speed: 0.75, anim: 1.1,  gap: 0.97, space: 215,
+        patterns: [tunnel, movingPillars, bouncingBlocks, spinningBar] },
+      { speed: 0.8, anim: 1.2,  gap: 0.94, space: 200,
+        patterns: [pendulum, orbit, shutter, pillars, spinningBar] },
+      { speed: 0.85, anim: 1.3,  gap: 0.91, space: 185,
+        patterns: [spinningCross, wave, conveyor, movingPillars, pendulum] },
+      { speed: 0.9, anim: 1.4,  gap: 0.88, space: 170,
+        patterns: [windmill, ring, pulsing, tunnel, orbit, shutter] },
+      { speed: 0.95, anim: 1.5,  gap: 0.86, space: 160,
+        patterns: [spinningTriangle, stars, gears, figureEight, zigzag, wave] },
+      { speed: 1.0, anim: 1.6,  gap: 0.84, space: 150,
+        patterns: [windmill, conveyor, spinningCross, ring, pulsing, movingPillars, stars] },
+      { speed: 1.05, anim: 1.7,  gap: 0.82, space: 140,
+        patterns: [gears, figureEight, tunnel, pendulum, spinningTriangle, shutter, wave] },
+      { speed: 1.1, anim: 1.8,  gap: 0.8,  space: 130,
+        patterns: [ring, windmill, conveyor, stars, orbit, bouncingBlocks, spinningCross, pulsing] },
+      { speed: 1.15, anim: 1.9,  gap: 0.78, space: 120,
+        patterns: [figureEight, gears, shutter, windmill, wave, ring, pendulum, conveyor, tunnel] },
+    ];
 
     // ===== ゲームの状態 =====
-    let state = "title"; // "title" / "playing" / "gameover"
-    let player, bullets, enemies, particles, stars;
-    let score, highScore = 0, frame, shootCooldown, invincible;
+    let state = "title"; // "title" / "select" / "playing" / "gameover" / "clear"
+    let dot, camX, scrollSpeed, obstacles, t, waitTimer;
+    let stageIndex = 0, goalX;
+    let gapScale = 1; // 今のステージのすき間の広さの倍率
+    let countdown = 0, goTimer = 0; // スタート前のカウントダウンと「GO!」の表示時間
+    let pointerDown = false;
+    // クリアしたステージの記録（ページを閉じても残る）
+    let cleared = JSON.parse(localStorage.getItem("dotRunCleared") || "[]");
+    const isUnlocked = (i) => i === 0 || cleared[i - 1];
 
-    // 背景の星（流れる演出用）
-    stars = Array.from({ length: 80 }, () => ({
-      x: Math.random() * W,
-      y: Math.random() * H,
-      speed: 0.5 + Math.random() * 2,
-    }));
+    function startStage(i) {
+      stageIndex = i;
+      const stage = STAGES[i];
+      gapScale = stage.gap;
+      // ステージの障害物を最初に全部並べる
+      // 障害物ごとに乱数の種を固定しているので、何度やり直しても同じ配置になる
+      obstacles = [];
+      let x = W + 100;
+      stage.patterns.forEach((pattern, k) => {
+        seed = (i + 1) * 1000 + k * 7919;
+        const p = pattern(x);
+        obstacles.push(...p.list);
+        x += p.width + stage.space;
+      });
+      goalX = x + 100; // 最後の障害物のあとにゴール
+      // vx, vy は画面に対する速度。最初のクリックまでは画面と一緒に流れるだけ
+      // speed は今の速さ。vx, vy は向き × 速さ
+      dot = { x: 200, y: H / 2, vx: 0, vy: 0, speed: 0 };
+      keyDir = null;
+      camX = 0;
+      scrollSpeed = stage.speed;
+      t = 0;
+      for (const o of obstacles) Object.assign(o, o.pose(0)); // カウントダウン中の表示用
+      // 3, 2, 1 のカウントダウンから始める
+      countdown = COUNTDOWN;
+      goTimer = 0;
+      state = "countdown";
+    }
 
-    function startGame() {
-      player = { x: W / 2, y: H - 80, w: 30, h: 30, speed: 5, life: 3 };
-      bullets = [];
-      enemies = [];
-      particles = [];
-      score = 0;
-      frame = 0;
-      shootCooldown = 0;
-      invincible = 0;
-      state = "playing";
+    // ===== 入力（クリック・ドラッグ・タッチ） =====
+    // 画面上の座標をキャンバス内の座標に変換する
+    function toCanvasPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * (W / rect.width),
+        y: (e.clientY - rect.top) * (H / rect.height),
+      };
+    }
+
+    // クリックした方向へ進む向きを変える（止まらずに等速で進み続ける）
+    function setTarget(e) {
+      const p = toCanvasPos(e);
+      const dx = p.x - (dot.x - camX);
+      const dy = p.y - dot.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) return; // 点そのものをクリックしたときは向きを変えない
+      dot.speed = DOT_SPEED;
+      dot.vx = (dx / len) * DOT_SPEED;
+      dot.vy = (dy / len) * DOT_SPEED;
+      keyDir = null; // クリックしたら矢印キーでの加速はリセット
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (state === "playing") {
+        pointerDown = true;
+        setTarget(e);
+        return;
+      }
+      if (state === "title") { state = "select"; return; }
+      // それ以外の画面ではボタンを押したか調べる
+      const p = toCanvasPos(e);
+      for (const b of getButtons()) {
+        if (b.enabled && p.x > b.x && p.x < b.x + b.w && p.y > b.y && p.y < b.y + b.h) {
+          b.onClick();
+          return;
+        }
+      }
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      // 押したままドラッグすると目的地を更新し続ける
+      if (pointerDown && state === "playing") setTarget(e);
+    });
+    window.addEventListener("pointerup", () => { pointerDown = false; });
+
+    // 矢印キーで向きを変える（2つ同時押しでななめ。キーを離しても進み続ける）
+    // 新しい向きはゆっくりから始まり、同じ向きを押し続ける・何度も押すとだんだん速くなる
+    const ARROWS = {
+      ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+    };
+    const heldArrows = new Set();
+    let keyDir = null; // 矢印キーで今進んでいる向き（"1,0" のような文字列）
+
+    // 押されている矢印キーを合わせた向きを返す（向きが決まらないときは null）
+    function heldDirection() {
+      let dx = 0, dy = 0;
+      for (const code of heldArrows) {
+        dx += ARROWS[code][0];
+        dy += ARROWS[code][1];
+      }
+      const len = Math.hypot(dx, dy);
+      if (len === 0) return null; // 何も押していない・上と下を同時に押したときなど
+      return { ux: dx / len, uy: dy / len, key: `${dx},${dy}` };
+    }
+
+    // 速さを変えて、今の向きのまま速度に反映する
+    function setSpeed(dir, speed) {
+      dot.speed = Math.min(DOT_SPEED_MAX, speed);
+      dot.vx = dir.ux * dot.speed;
+      dot.vy = dir.uy * dot.speed;
+    }
+    document.addEventListener("keydown", (e) => {
+      // Enterキーで「リトライ」「次のステージへ」などの最初のボタンを押す
+      if (e.code === "Enter" || e.code === "NumpadEnter") {
+        if (state === "title") state = "select";
+        else if (state === "gameover" || state === "clear") {
+          const b = getButtons()[0];
+          if (b && b.enabled) b.onClick();
+        }
+        return;
+      }
+      if (!ARROWS[e.code]) return;
+      e.preventDefault(); // 矢印キーでページがスクロールしないようにする
+      if (e.repeat) return; // 押しっぱなしの加速は update() で行う
+      heldArrows.add(e.code);
+      if (state !== "playing") return;
+      const dir = heldDirection();
+      if (!dir) return;
+      // 同じ向きをもう一度押したら加速、違う向きならゆっくりから
+      setSpeed(dir, dir.key === keyDir ? dot.speed + TAP_BOOST : DOT_SPEED_SLOW);
+      keyDir = dir.key;
+    });
+    document.addEventListener("keyup", (e) => { heldArrows.delete(e.code); });
+    window.addEventListener("blur", () => heldArrows.clear());
+
+    // ===== 便利関数 =====
+    // 種（seed）が同じなら毎回同じ並びになる乱数
+    let seed = 1;
+    function random() {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    }
+    const rand = (a, b) => a + random() * (b - a);
+    const pick = (arr) => arr[Math.floor(random() * arr.length)];
+
+    // 障害物を作る
+    //   shape: "rect"（長方形）か "circle"（円）
+    //   pose(t): 時刻 t のときの位置 {x, y} と回転角 a を返す関数
+    function rect(w, h, pose, endX) {
+      return { shape: "rect", w, h, pose, endX };
+    }
+    function circle(r, pose, endX) {
+      return { shape: "circle", r, pose, endX };
+    }
+    // 多角形（points は中心から見た頂点の座標 [[x, y], ...]）
+    function poly(points, pose, endX) {
+      return { shape: "poly", points, pose, endX };
+    }
+    // 中心から半径 radii を順番に使って頂点を作る（三角形や星形用）
+    function radialPoints(count, radii) {
+      return Array.from({ length: count }, (_, i) => {
+        const a = (Math.PI * 2 * i) / count - Math.PI / 2;
+        const r = radii[i % radii.length];
+        return [Math.cos(a) * r, Math.sin(a) * r];
+      });
+    }
+
+    // ===== 障害物のパターン =====
+    // 各パターンは開始位置 x を受け取り、{ list: 障害物の配列, width: パターンの幅 } を返す
+
+    // 1. 上下の柱（すき間を通る）
+    function pillars(x) {
+      const gap = rand(120, 160) * gapScale;
+      const gapTop = rand(TOP + 30, BOTTOM - 30 - gap);
+      const end = x + 40;
+      return {
+        width: 40,
+        list: [
+          rect(40, H, () => ({ x, y: gapTop - H / 2, a: 0 }), end),
+          rect(40, H, () => ({ x, y: gapTop + gap + H / 2, a: 0 }), end),
+        ],
+      };
+    }
+
+    // 2. 上下に動く柱
+    function movingPillars(x) {
+      const gap = 140 * gapScale;
+      const amp = rand(50, 90);
+      const center = rand(TOP + gap / 2 + amp + 10, BOTTOM - gap / 2 - amp - 10);
+      const speed = rand(0.02, 0.035);
+      const phase = rand(0, Math.PI * 2);
+      const end = x + 40;
+      const gapY = (t) => center + Math.sin(t * speed + phase) * amp;
+      return {
+        width: 40,
+        list: [
+          rect(40, H, (t) => ({ x, y: gapY(t) - gap / 2 - H / 2, a: 0 }), end),
+          rect(40, H, (t) => ({ x, y: gapY(t) + gap / 2 + H / 2, a: 0 }), end),
+        ],
+      };
+    }
+
+    // 3. 回転する棒
+    function spinningBar(x) {
+      const len = rand(160, 230);
+      const cy = rand(TOP + len / 2 - 20, BOTTOM - len / 2 + 20);
+      const spin = pick([-1, 1]) * rand(0.015, 0.03);
+      const cx = x + len / 2;
+      return {
+        width: len,
+        list: [rect(len, 16, (t) => ({ x: cx, y: cy, a: t * spin }), x + len)],
+      };
+    }
+
+    // 4. 回転する十字
+    function spinningCross(x) {
+      const len = rand(150, 190);
+      const cy = rand(TOP + 100, BOTTOM - 100);
+      const spin = pick([-1, 1]) * rand(0.012, 0.022);
+      const cx = x + len / 2;
+      return {
+        width: len,
+        list: [
+          rect(len, 14, (t) => ({ x: cx, y: cy, a: t * spin }), x + len),
+          rect(len, 14, (t) => ({ x: cx, y: cy, a: t * spin + Math.PI / 2 }), x + len),
+        ],
+      };
+    }
+
+    // 5. ぐるぐる回る玉
+    function orbit(x) {
+      const R = rand(60, 85);
+      const cx = x + R + 15;
+      const cy = rand(TOP + R + 20, BOTTOM - R - 20);
+      const speed = pick([-1, 1]) * rand(0.025, 0.04);
+      const n = pick([2, 3, 4]);
+      const list = [circle(10, () => ({ x: cx, y: cy, a: 0 }), cx + R + 15)];
+      for (let i = 0; i < n; i++) {
+        const offset = (Math.PI * 2 * i) / n;
+        list.push(circle(14, (t) => ({
+          x: cx + Math.cos(t * speed + offset) * R,
+          y: cy + Math.sin(t * speed + offset) * R,
+          a: 0,
+        }), cx + R + 15));
+      }
+      return { width: R * 2 + 30, list };
+    }
+
+    // 6. 振り子（天井または床からぶら下がる）
+    function pendulum(x) {
+      const fromTop = random() < 0.5;
+      const pivotY = fromTop ? TOP : BOTTOM;
+      const dir = fromTop ? 1 : -1;
+      const len = rand(200, 270);
+      const swing = rand(0.7, 1.0);
+      const speed = rand(0.025, 0.04);
+      const phase = rand(0, Math.PI * 2);
+      const angle = (t) => Math.sin(t * speed + phase) * swing;
+      const end = x + len;
+      return {
+        width: len,
+        list: [
+          // 棒
+          rect(10, len, (t) => {
+            const a = angle(t);
+            return {
+              x: x + len / 2 - Math.sin(a) * (len / 2) * dir,
+              y: pivotY + Math.cos(a) * (len / 2) * dir,
+              a,
+            };
+          }, end),
+          // 先端のおもり
+          circle(22, (t) => {
+            const a = angle(t);
+            return {
+              x: x + len / 2 - Math.sin(a) * len * dir,
+              y: pivotY + Math.cos(a) * len * dir,
+              a: 0,
+            };
+          }, end),
+        ],
+      };
+    }
+
+    // 7. 散らばったブロック（ゆっくり回るものもある）
+    function scatteredBlocks(x) {
+      const list = [];
+      const width = 260;
+      const count = Math.floor(rand(3, 5));
+      for (let i = 0; i < count; i++) {
+        const size = rand(28, 60);
+        const bx = x + (width / count) * i + size / 2;
+        const by = rand(TOP + size, BOTTOM - size);
+        const spin = random() < 0.5 ? rand(-0.03, 0.03) : 0;
+        list.push(rect(size, size, (t) => ({ x: bx, y: by, a: t * spin }), x + width));
+      }
+      return { width, list };
+    }
+
+    // 8. 上下に往復するブロックの列
+    function bouncingBlocks(x) {
+      const list = [];
+      const count = pick([2, 3]);
+      const size = 46;
+      const amp = (BOTTOM - TOP) / 2 - size / 2 - 5;
+      const center = (TOP + BOTTOM) / 2;
+      const speed = rand(0.025, 0.04);
+      const width = count * 100;
+      for (let i = 0; i < count; i++) {
+        const phase = i * Math.PI * 0.6;
+        list.push(rect(size, size, (t) => ({
+          x: x + i * 100 + size / 2,
+          y: center + Math.sin(t * speed + phase) * amp,
+          a: 0,
+        }), x + width));
+      }
+      return { width, list };
+    }
+
+    // 9. 細い通路（上下からトゲのように突き出たブロック）
+    function zigzag(x) {
+      const list = [];
+      const count = 4;
+      const step = 80;
+      for (let i = 0; i < count; i++) {
+        const fromTop = i % 2 === 0;
+        const len = rand(170, 230);
+        const bx = x + i * step + 15;
+        const by = fromTop ? TOP + len / 2 : BOTTOM - len / 2;
+        list.push(rect(30, len, () => ({ x: bx, y: by, a: 0 }), x + count * step));
+      }
+      return { width: count * step, list };
+    }
+
+    // 10. 回転する三角形
+    function spinningTriangle(x) {
+      const R = rand(70, 100);
+      const cx = x + R;
+      const cy = rand(TOP + R, BOTTOM - R);
+      const spin = pick([-1, 1]) * rand(0.015, 0.03);
+      return {
+        width: R * 2,
+        list: [poly(radialPoints(3, [R]), (t) => ({ x: cx, y: cy, a: t * spin }), x + R * 2)],
+      };
+    }
+
+    // 11. 風車（中心から羽が伸びて回る）
+    function windmill(x) {
+      const len = rand(100, 130);
+      const n = pick([3, 4]);
+      const cx = x + len;
+      const cy = rand(TOP + len, BOTTOM - len);
+      const spin = pick([-1, 1]) * rand(0.015, 0.025);
+      const end = x + len * 2;
+      const list = [circle(16, () => ({ x: cx, y: cy, a: 0 }), end)];
+      for (let i = 0; i < n; i++) {
+        const offset = (Math.PI * 2 * i) / n;
+        list.push(rect(len, 14, (t) => {
+          const a = t * spin + offset;
+          return { x: cx + Math.cos(a) * len / 2, y: cy + Math.sin(a) * len / 2, a };
+        }, end));
+      }
+      return { width: len * 2, list };
+    }
+
+    // 12. 回りながら上下に動く星
+    function stars(x) {
+      const count = pick([2, 3]);
+      const step = 130;
+      const amp = (BOTTOM - TOP) / 2 - 50;
+      const center = (TOP + BOTTOM) / 2;
+      const speed = rand(0.02, 0.03);
+      const width = (count - 1) * step + 80;
+      const list = [];
+      for (let i = 0; i < count; i++) {
+        const sx = x + 40 + i * step;
+        const phase = i * Math.PI;
+        list.push(poly(radialPoints(10, [40, 17]), (t) => ({
+          x: sx,
+          y: center + Math.sin(t * speed + phase) * amp,
+          a: t * 0.05,
+        }), x + width));
+      }
+      return { width, list };
+    }
+
+    // 13. 歯車のように逆回転する2本の棒
+    function gears(x) {
+      const len = 160;
+      const cy = rand(TOP + 120, BOTTOM - 120);
+      const spin = rand(0.02, 0.03);
+      const end = x + len * 2 + 10;
+      return {
+        width: len * 2 + 10,
+        list: [
+          rect(len, 14, (t) => ({ x: x + len / 2, y: cy, a: t * spin }), end),
+          rect(len, 14, (t) => ({ x: x + len * 1.5 + 10, y: cy, a: -t * spin + Math.PI / 2 }), end),
+        ],
+      };
+    }
+
+    // 14. 波のようにうねる玉の列
+    function wave(x) {
+      const count = 7;
+      const step = 45;
+      const amp = rand(110, 150);
+      const center = (TOP + BOTTOM) / 2;
+      const speed = rand(0.03, 0.045);
+      const width = (count - 1) * step + 24;
+      const list = [];
+      for (let i = 0; i < count; i++) {
+        list.push(circle(12, (t) => ({
+          x: x + 12 + i * step,
+          y: center + Math.sin(t * speed + i * 0.6) * amp,
+          a: 0,
+        }), x + width));
+      }
+      return { width, list };
+    }
+
+    // 15. 開いたり閉じたりするシャッター
+    function shutter(x) {
+      const cy = rand(TOP + 130, BOTTOM - 130);
+      const speed = rand(0.025, 0.035);
+      const phase = rand(0, Math.PI * 2);
+      const open = 100 * gapScale;
+      const gapHalf = (t) => 15 + Math.max(0, Math.sin(t * speed + phase)) * open;
+      const end = x + 40;
+      return {
+        width: 40,
+        list: [
+          rect(40, H, (t) => ({ x, y: cy - gapHalf(t) - H / 2, a: 0 }), end),
+          rect(40, H, (t) => ({ x, y: cy + gapHalf(t) + H / 2, a: 0 }), end),
+        ],
+      };
+    }
+
+    // 16. すき間のある回転リング
+    function ring(x) {
+      const R = 90;
+      const slots = 14;
+      const gapStart = Math.floor(rand(0, slots));
+      const cx = x + R + 10;
+      const cy = (TOP + BOTTOM) / 2 + rand(-20, 20);
+      const spin = pick([-1, 1]) * rand(0.01, 0.018);
+      const end = x + R * 2 + 20;
+      const list = [];
+      for (let i = 0; i < slots; i++) {
+        // 3つ分だけ玉を抜いて入り口を作る
+        if ((i - gapStart + slots) % slots < 3) continue;
+        const offset = (Math.PI * 2 * i) / slots;
+        list.push(circle(10, (t) => ({
+          x: cx + Math.cos(t * spin + offset) * R,
+          y: cy + Math.sin(t * spin + offset) * R,
+          a: 0,
+        }), end));
+      }
+      return { width: R * 2 + 20, list };
+    }
+
+    // 17. ベルトコンベア（上下に流れ続けるブロックの列）
+    function conveyor(x) {
+      const size = 40;
+      const perColumn = 3;
+      const range = BOTTOM - TOP + size;
+      const spacing = range / perColumn;
+      const speed = rand(1.2, 2);
+      const columns = 2;
+      const width = (columns - 1) * 120 + size;
+      const list = [];
+      for (let c = 0; c < columns; c++) {
+        const dir = c % 2 === 0 ? 1 : -1; // 列ごとに流れる向きを逆にする
+        const bx = x + size / 2 + c * 120;
+        for (let i = 0; i < perColumn; i++) {
+          list.push(rect(size, size, (t) => {
+            const pos = (((t * speed * dir + i * spacing) % range) + range) % range;
+            return { x: bx, y: TOP - size / 2 + pos, a: 0 };
+          }, x + width));
+        }
+      }
+      return { width, list };
+    }
+
+    // 18. 8の字を描いて飛び回るブロック
+    function figureEight(x) {
+      const cx = x + 90;
+      const center = (TOP + BOTTOM) / 2;
+      const speed = rand(0.02, 0.03);
+      const phase = rand(0, Math.PI * 2);
+      return {
+        width: 180,
+        list: [rect(46, 46, (t) => ({
+          x: cx + Math.sin((t * speed + phase) * 2) * 60,
+          y: center + Math.sin(t * speed + phase) * 150,
+          a: t * 0.04,
+        }), x + 180)],
+      };
+    }
+
+    // 19. ふくらんだり縮んだりする玉
+    function pulsing(x) {
+      const count = 3;
+      const step = 110;
+      const speed = rand(0.03, 0.045);
+      const width = (count - 1) * step + 130;
+      const list = [];
+      for (let i = 0; i < count; i++) {
+        const bx = x + 65 + i * step;
+        const by = i % 2 === 0 ? TOP + 120 : BOTTOM - 120;
+        list.push(circle(20, (t) => ({
+          x: bx,
+          y: by,
+          a: 0,
+          r: 20 + (Math.sin(t * speed + i * 1.5) + 1) / 2 * 45,
+        }), x + width));
+      }
+      return { width, list };
+    }
+
+    // 20. くねくね曲がったトンネル
+    function tunnel(x) {
+      const segments = 8;
+      const segW = 40;
+      const gap = 140 * gapScale;
+      const phase = rand(0, Math.PI * 2);
+      const mid = (TOP + BOTTOM) / 2;
+      const end = x + segments * segW;
+      const list = [];
+      for (let i = 0; i < segments; i++) {
+        const cy = mid + Math.sin(i * 0.7 + phase) * 110;
+        const sx = x + segW / 2 + i * segW;
+        list.push(rect(segW + 1, H, () => ({ x: sx, y: cy - gap / 2 - H / 2, a: 0 }), end));
+        list.push(rect(segW + 1, H, () => ({ x: sx, y: cy + gap / 2 + H / 2, a: 0 }), end));
+      }
+      return { width: segments * segW, list };
+    }
+
+    // ===== 当たり判定 =====
+    function hits(o, px, py, r) {
+      if (o.shape === "circle") {
+        return Math.hypot(px - o.x, py - o.y) < o.r + r;
+      }
+      // 点を障害物の向きに合わせて回転させ、障害物から見た座標 (lx, ly) にする
+      const dx = px - o.x;
+      const dy = py - o.y;
+      const cos = Math.cos(-o.a);
+      const sin = Math.sin(-o.a);
+      const lx = dx * cos - dy * sin;
+      const ly = dx * sin + dy * cos;
+      if (o.shape === "poly") return hitsPoly(o.points, lx, ly, r);
+      // 回転した長方形
+      const cx = Math.max(-o.w / 2, Math.min(o.w / 2, lx));
+      const cy = Math.max(-o.h / 2, Math.min(o.h / 2, ly));
+      return Math.hypot(lx - cx, ly - cy) < r;
+    }
+
+    // 多角形との当たり判定：中に入っているか、どれかの辺に近すぎたら当たり
+    function hitsPoly(points, px, py, r) {
+      let inside = false;
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i];
+        const [x2, y2] = points[j];
+        if ((y1 > py) !== (y2 > py) && px < ((x2 - x1) * (py - y1)) / (y2 - y1) + x1) {
+          inside = !inside;
+        }
+        // 辺 (x1,y1)-(x2,y2) と点の距離
+        const ex = x2 - x1, ey = y2 - y1;
+        const k = Math.max(0, Math.min(1, ((px - x1) * ex + (py - y1) * ey) / (ex * ex + ey * ey)));
+        if (Math.hypot(px - (x1 + ex * k), py - (y1 + ey * k)) < r) return true;
+      }
+      return inside;
     }
 
     // ===== 更新処理 =====
     function update() {
-      // 星を流す
-      for (const s of stars) {
-        s.y += s.speed;
-        if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+      if (state === "gameover" || state === "clear") { waitTimer--; return; }
+      if (state === "countdown") {
+        countdown--;
+        if (countdown <= 0) {
+          state = "playing";
+          goTimer = 45;
+        }
+        return;
       }
-
       if (state !== "playing") return;
-      frame++;
+      t++;
+      if (goTimer > 0) goTimer--;
 
-      // --- プレイヤーの移動 ---
-      if (keys["ArrowLeft"] || keys["KeyA"]) player.x -= player.speed;
-      if (keys["ArrowRight"] || keys["KeyD"]) player.x += player.speed;
-      if (keys["ArrowUp"] || keys["KeyW"]) player.y -= player.speed;
-      if (keys["ArrowDown"] || keys["KeyS"]) player.y += player.speed;
-      player.x = Math.max(player.w / 2, Math.min(W - player.w / 2, player.x));
-      player.y = Math.max(player.h / 2, Math.min(H - player.h / 2, player.y));
+      // 今の向きのキーを押し続けている間はだんだん速くなる
+      const held = heldDirection();
+      if (held && held.key === keyDir) setSpeed(held, dot.speed + HOLD_ACCEL);
 
-      // --- 弾を撃つ ---
-      if (shootCooldown > 0) shootCooldown--;
-      if (keys["Space"] && shootCooldown === 0) {
-        bullets.push({ x: player.x, y: player.y - 20, r: 4, speed: 9 });
-        shootCooldown = 10;
+      // 画面を右へ進める
+      camX += scrollSpeed;
+
+      // 黒い点を等速直線運動させる
+      // 速度は「画面から見た速さ」なので、画面のスクロール分も一緒に進める。
+      // こうすると画面上では上下左右どの向きにも同じ速さでまっすぐ進む
+      dot.x += dot.vx + scrollSpeed;
+      dot.y += dot.vy;
+
+      // 障害物の位置を更新し（ステージが進むほど速く動く）、画面外に出たものを消す
+      const anim = STAGES[stageIndex].anim;
+      for (const o of obstacles) Object.assign(o, o.pose(t * anim));
+      obstacles = obstacles.filter((o) => o.endX > camX - 100);
+
+      // 壁との当たり判定（上・下・左）
+      const screenX = dot.x - camX;
+      if (dot.y - DOT_R < TOP || dot.y + DOT_R > BOTTOM || screenX - DOT_R < LEFT_WALL) {
+        gameOver();
+        return;
       }
-      for (const b of bullets) b.y -= b.speed;
-      bullets = bullets.filter((b) => b.y > -10);
-
-      // --- 敵の出現（スコアが上がるほど出やすく・速くなる）---
-      const level = 1 + Math.floor(score / 500);
-      const spawnRate = Math.max(15, 60 - level * 5);
-      if (frame % spawnRate === 0) {
-        const size = 20 + Math.random() * 20;
-        enemies.push({
-          x: size + Math.random() * (W - size * 2),
-          y: -size,
-          r: size / 2,
-          speed: 1.5 + Math.random() * level,
-          wobble: Math.random() * Math.PI * 2, // 左右に揺れる動き用
-          hp: size > 32 ? 3 : 1,
-        });
-      }
-      for (const e of enemies) {
-        e.y += e.speed;
-        e.wobble += 0.05;
-        e.x += Math.sin(e.wobble) * 1.5;
+      // 障害物との当たり判定
+      for (const o of obstacles) {
+        if (hits(o, dot.x, dot.y, DOT_R)) { gameOver(); return; }
       }
 
-      // --- 弾と敵の当たり判定 ---
-      for (const e of enemies) {
-        for (const b of bullets) {
-          if (b.hit) continue;
-          if (Math.hypot(e.x - b.x, e.y - b.y) < e.r + b.r) {
-            b.hit = true;
-            e.hp--;
-            if (e.hp <= 0) {
-              e.dead = true;
-              score += e.r > 16 ? 30 : 10;
-              explode(e.x, e.y, "#ff8844");
-            }
-          }
-        }
+      // ゴールテープを通りすぎたらクリア
+      if (dot.x - DOT_R > goalX + 20) {
+        state = "clear";
+        waitTimer = 40;
+        cleared[stageIndex] = true;
+        localStorage.setItem("dotRunCleared", JSON.stringify(cleared));
       }
-      bullets = bullets.filter((b) => !b.hit);
-
-      // --- 敵とプレイヤーの当たり判定 ---
-      if (invincible > 0) invincible--;
-      for (const e of enemies) {
-        if (e.dead) continue;
-        if (invincible === 0 && Math.hypot(e.x - player.x, e.y - player.y) < e.r + 12) {
-          e.dead = true;
-          player.life--;
-          invincible = 90; // 約1.5秒の無敵時間
-          explode(player.x, player.y, "#44ccff");
-          if (player.life <= 0) {
-            state = "gameover";
-            highScore = Math.max(highScore, score);
-          }
-        }
-      }
-      enemies = enemies.filter((e) => !e.dead && e.y < H + 50);
-
-      // --- 爆発エフェクト ---
-      for (const p of particles) {
-        p.x += p.vx;
-        p.y += p.vy;
-        p.life--;
-      }
-      particles = particles.filter((p) => p.life > 0);
     }
 
-    // 爆発のパーティクルを作る
-    function explode(x, y, color) {
-      for (let i = 0; i < 20; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 1 + Math.random() * 4;
-        particles.push({
-          x, y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          life: 30 + Math.random() * 20,
-          color,
-        });
+    function gameOver() {
+      state = "gameover";
+      waitTimer = 40; // すぐにボタンが押されないよう少し待つ
+    }
+
+    // ===== ボタン =====
+    // 今の画面に表示するボタンの一覧を返す（描画とクリック判定の両方で使う）
+    function getButtons() {
+      const ready = waitTimer <= 0;
+      const toSelect = { label: "ステージ選択", onClick: () => { state = "select"; } };
+      if (state === "select") {
+        // 5列×2段のステージボタン
+        return STAGES.map((_, i) => ({
+          x: 125 + (i % 5) * 115,
+          y: 150 + Math.floor(i / 5) * 115,
+          w: 90,
+          h: 90,
+          label: String(i + 1),
+          big: true,
+          cleared: cleared[i],
+          enabled: isUnlocked(i),
+          onClick: () => startStage(i),
+        }));
       }
+      let list = [];
+      if (state === "gameover") {
+        list = [{ label: "リトライ", onClick: () => startStage(stageIndex) }, toSelect];
+      } else if (state === "clear") {
+        list = stageIndex < STAGES.length - 1
+          ? [{ label: "次のステージへ", onClick: () => startStage(stageIndex + 1) }, toSelect]
+          : [toSelect];
+      }
+      // 横に並べて中央寄せする
+      const w = 180, h = 46, gap = 20;
+      const startX = (W - (list.length * w + (list.length - 1) * gap)) / 2;
+      return list.map((b, i) => ({ ...b, x: startX + i * (w + gap), y: H / 2 + 50, w, h, enabled: ready }));
+    }
+
+    function drawButtons() {
+      for (const b of getButtons()) {
+        ctx.fillStyle = b.enabled ? "#000" : "#bbb";
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = "#f4f4ef";
+        ctx.font = `bold ${b.big ? 36 : 18}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + (b.cleared ? -8 : 0));
+        if (b.cleared) {
+          ctx.font = "bold 13px sans-serif";
+          ctx.fillText("CLEAR", b.x + b.w / 2, b.y + b.h - 16);
+        }
+        ctx.textBaseline = "alphabetic";
+      }
+    }
+
+    // ゴールテープ（白黒のチェック模様）
+    function drawGoal() {
+      const size = 10;
+      for (let y = TOP; y < BOTTOM; y += size) {
+        for (let i = 0; i < 2; i++) {
+          ctx.fillStyle = (Math.floor((y - TOP) / size) + i) % 2 === 0 ? "#000" : "#fff";
+          ctx.fillRect(goalX + i * size, y, size, Math.min(size, BOTTOM - y));
+        }
+      }
+      ctx.fillStyle = "#000";
+      ctx.font = "bold 20px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("GOAL", goalX + 28, H / 2 + 7);
     }
 
     // ===== 描画処理 =====
     function draw() {
-      ctx.fillStyle = "#000";
+      ctx.fillStyle = "#f4f4ef";
       ctx.fillRect(0, 0, W, H);
 
-      // 星
-      ctx.fillStyle = "#888";
-      for (const s of stars) ctx.fillRect(s.x, s.y, s.speed, s.speed);
-
       if (state === "title") {
-        drawCenterText("スペースシューター", 40, H / 2 - 60, "#44ccff");
-        drawCenterText("矢印キー / WASD：移動", 18, H / 2 + 10);
-        drawCenterText("スペース：ショット", 18, H / 2 + 40);
-        drawCenterText("Enterでスタート", 22, H / 2 + 100, "#ffdd44");
+        drawWalls();
+        drawText("ドットラン", 48, H / 2 - 50);
+        drawText("クリックした方向か矢印キーの方向へ、黒い点がまっすぐ進み続けます", 16, H / 2 + 5);
+        drawText("黒いものと壁に当たったらゲームオーバー", 16, H / 2 + 30);
+        drawText("右のゴールテープを通りぬけたらクリア", 16, H / 2 + 55);
+        drawText("クリックでスタート", 22, H / 2 + 110);
         return;
       }
 
-      // プレイヤー（無敵中は点滅）
-      if (invincible === 0 || Math.floor(invincible / 5) % 2 === 0) {
-        ctx.fillStyle = "#44ccff";
-        ctx.beginPath();
-        ctx.moveTo(player.x, player.y - 18);
-        ctx.lineTo(player.x - 15, player.y + 15);
-        ctx.lineTo(player.x, player.y + 8);
-        ctx.lineTo(player.x + 15, player.y + 15);
-        ctx.closePath();
-        ctx.fill();
+      if (state === "select") {
+        drawWalls();
+        drawText("ステージ選択", 32, 100);
+        drawButtons();
+        return;
       }
 
-      // 弾
-      ctx.fillStyle = "#ffff66";
-      for (const b of bullets) {
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-        ctx.fill();
+      // ここから先はワールド座標で描く（camX 分だけ左にずらす）
+      ctx.save();
+      ctx.translate(-camX, 0);
+
+      drawGoal();
+
+      // 障害物
+      ctx.fillStyle = "#000";
+      for (const o of obstacles) {
+        if (o.shape === "circle") {
+          ctx.beginPath();
+          ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (o.shape === "poly") {
+          ctx.save();
+          ctx.translate(o.x, o.y);
+          ctx.rotate(o.a);
+          ctx.beginPath();
+          o.points.forEach(([px, py], i) => (i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)));
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        } else {
+          ctx.save();
+          ctx.translate(o.x, o.y);
+          ctx.rotate(o.a);
+          ctx.fillRect(-o.w / 2, -o.h / 2, o.w, o.h);
+          ctx.restore();
+        }
       }
 
-      // 敵（大きい敵は紫、小さい敵は赤）
-      for (const e of enemies) {
-        ctx.fillStyle = e.r > 16 ? "#cc44ff" : "#ff4466";
-        ctx.beginPath();
-        ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(e.x - e.r / 3, e.y - 2, 3, 3);
-        ctx.fillRect(e.x + e.r / 3 - 3, e.y - 2, 3, 3);
-      }
+      // 黒い点（ゲームオーバー時は赤く）
+      ctx.fillStyle = state === "gameover" ? "#d33" : "#000";
+      ctx.beginPath();
+      ctx.arc(dot.x, dot.y, DOT_R, 0, Math.PI * 2);
+      ctx.fill();
 
-      // パーティクル
-      for (const p of particles) {
-        ctx.globalAlpha = Math.min(1, p.life / 30);
-        ctx.fillStyle = p.color;
-        ctx.fillRect(p.x, p.y, 3, 3);
-      }
-      ctx.globalAlpha = 1;
+      ctx.restore();
 
-      // スコア・ライフ表示
+      drawWalls();
+
+      // ステージ番号
       ctx.fillStyle = "#fff";
-      ctx.font = "18px sans-serif";
+      ctx.font = "bold 14px sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText(`SCORE: ${score}`, 10, 26);
-      ctx.textAlign = "right";
-      ctx.fillText("♥".repeat(Math.max(0, player.life)), W - 10, 26);
+      ctx.fillText(`STAGE ${stageIndex + 1}`, 20, 15);
 
-      if (state === "gameover") {
-        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+      // ゴールまでの進み具合（ゲームオーバー画面でだけ表示する）
+      const progress = Math.max(0, Math.min(1, (dot.x - 200) / (goalX - 200)));
+
+      // スタート前のカウントダウン「3」「2」「1」と、スタート直後の「GO!」
+      if (state === "countdown") {
+        ctx.fillStyle = "rgba(244, 244, 239, 0.6)";
         ctx.fillRect(0, 0, W, H);
-        drawCenterText("GAME OVER", 44, H / 2 - 40, "#ff4466");
-        drawCenterText(`スコア: ${score}`, 22, H / 2 + 10);
-        drawCenterText(`ハイスコア: ${highScore}`, 18, H / 2 + 40);
-        drawCenterText("Enterでリトライ", 22, H / 2 + 100, "#ffdd44");
+        drawText(`STAGE ${stageIndex + 1}`, 24, H / 2 - 80);
+        drawText(String(Math.ceil(countdown / 60)), 120, H / 2 + 40);
+      } else if (state === "playing" && goTimer > 0) {
+        ctx.globalAlpha = Math.min(1, goTimer / 20); // だんだん消える
+        drawText("GO!", 100, H / 2 + 35);
+        ctx.globalAlpha = 1;
+      }
+
+      if (state === "gameover" || state === "clear") {
+        ctx.fillStyle = "rgba(244, 244, 239, 0.75)";
+        ctx.fillRect(0, 0, W, H);
+        if (state === "gameover") {
+          drawText("GAME OVER", 48, H / 2 - 30);
+          drawText(`STAGE ${stageIndex + 1}  ${Math.floor(progress * 100)}%`, 20, H / 2 + 10);
+        } else if (stageIndex < STAGES.length - 1) {
+          drawText(`STAGE ${stageIndex + 1} CLEAR!`, 44, H / 2 - 20);
+        } else {
+          drawText("全ステージクリア！", 44, H / 2 - 20);
+        }
+        drawButtons();
       }
     }
 
-    function drawCenterText(text, size, y, color = "#fff") {
-      ctx.fillStyle = color;
+    // 上下左の壁
+    function drawWalls() {
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, WALL);
+      ctx.fillRect(0, H - WALL, W, WALL);
+      ctx.fillRect(0, 0, LEFT_WALL, H);
+    }
+
+    function drawText(text, size, y) {
+      ctx.fillStyle = "#000";
       ctx.font = `bold ${size}px sans-serif`;
       ctx.textAlign = "center";
       ctx.fillText(text, W / 2, y);
