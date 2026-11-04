@@ -36,6 +36,8 @@
     const LEFT_WALL = 8;      // 左の壁の厚さ
     const TOP = WALL;         // 動ける範囲の上端
     const BOTTOM = H - WALL;  // 動ける範囲の下端
+    const MID = (TOP + BOTTOM) / 2;    // 動ける範囲の上下の真ん中
+    const HALF = (BOTTOM - TOP) / 2;   // 動ける範囲の高さの半分
     const DOT_R = 6;          // 黒い点の半径
     // 黒い点の速さ（すべて画面に対する速さ）
     const DOT_SPEED = 2.3;        // クリックしたときの速さ
@@ -68,9 +70,23 @@
         patterns: [gears, figureEight, tunnel, pendulum, spinningTriangle, shutter, wave] },
       { speed: 1.1, anim: 1.8,  gap: 0.8,  space: 130,
         patterns: [ring, windmill, conveyor, stars, orbit, bouncingBlocks, spinningCross, pulsing] },
-      { speed: 1.15, anim: 1.9,  gap: 0.78, space: 120,
+      // 最終ステージ：半分まで進むと、後ろから飛行船が追いかけてきてレーザーを撃つ（ship: true）
+      { speed: 1.15, anim: 1.9,  gap: 0.78, space: 120, ship: true,
         patterns: [figureEight, gears, shutter, windmill, wave, ring, pendulum, conveyor, tunnel] },
     ];
+
+    // ===== 飛行船（最終ステージ） =====
+    const SHIP_START = 0.5;    // ステージのどこまで進んだら現れるか（0.5 = 半分）
+    const SHIP_X = 75;         // 画面の左から何ピクセルの所にとどまるか（中心）
+    const SHIP_RX = 46;        // 船体（だ円）の横の半径
+    const SHIP_RY = 20;        // 船体（だ円）の縦の半径
+    const SHIP_ENTER = 100;    // 画面の外から入ってくるのにかかるフレーム数
+    const SHIP_FOLLOW = 1.2;   // 点を追いかけて上下に動く速さ
+    const SHIP_COOL = 80;      // レーザーを撃ってから次のねらいを始めるまで
+    const SHIP_AIM = 55;       // ねらいを付けている時間（予告線が出る）
+    const SHIP_LOCK = 20;      // ねらいの最後のこのフレーム数は向きが固定される
+    const LASER_SPEED = 8;     // レーザーの速さ
+    const LASER_LEN = 46;      // レーザーの長さ
 
     // ===== ゲームの状態 =====
     let state = "title"; // "title" / "select" / "playing" / "gameover" / "clear"
@@ -78,6 +94,9 @@
     let stageIndex = 0, goalX;
     let gapScale = 1; // 今のステージのすき間の広さの倍率
     let countdown = 0, goTimer = 0; // スタート前のカウントダウンと「GO!」の表示時間
+    // 飛行船とレーザー（どちらも画面上の座標で動かす）
+    //   ship.mode: "waiting"（まだ来ていない）/ "entering"（入ってくる途中）/ "cool"（休み）/ "aim"（ねらい中）
+    let ship, lasers;
     let pointerDown = false;
     // クリアしたステージの記録（ページを閉じても残る）
     let cleared = JSON.parse(localStorage.getItem("dotRunCleared") || "[]");
@@ -106,6 +125,8 @@
       scrollSpeed = stage.speed;
       t = 0;
       for (const o of obstacles) Object.assign(o, o.pose(0)); // カウントダウン中の表示用
+      ship = { mode: "waiting", x: -SHIP_RX * 2, y: MID, timer: 0, angle: 0, warn: 0 };
+      lasers = [];
       // 3, 2, 1 のカウントダウンから始める
       countdown = COUNTDOWN;
       goTimer = 0;
@@ -276,50 +297,51 @@
       };
     }
 
-    // 3. 回転する棒
+    // 3. 回転する棒（縦になると上の壁から下の壁までふさぐ。横になったすきに通る）
     function spinningBar(x) {
-      const len = rand(230, 290);
-      const cy = rand(TOP + len / 2 - 40, BOTTOM - len / 2 + 40);
-      const spin = pick([-1, 1]) * rand(0.015, 0.03);
-      const cx = x + len / 2;
+      const len = HALF * 2;
+      const cx = x + HALF;
+      const spin = pick([-1, 1]) * rand(0.006, 0.009);
+      const phase = rand(0, Math.PI);
       return {
         width: len,
-        list: [rect(len, 20, (t) => ({ x: cx, y: cy, a: t * spin }), x + len)],
+        list: [rect(len, 20, (t) => ({ x: cx, y: MID, a: t * spin + phase }), x + len)],
       };
     }
 
-    // 4. 回転する十字
+    // 4. 回転する十字（腕の先が上下の壁まで届く）
     function spinningCross(x) {
-      const len = rand(210, 250);
-      const cy = rand(TOP + 130, BOTTOM - 130);
-      const spin = pick([-1, 1]) * rand(0.012, 0.022);
-      const cx = x + len / 2;
+      const len = HALF * 2;
+      const cx = x + HALF;
+      const spin = pick([-1, 1]) * rand(0.005, 0.008);
+      const phase = rand(0, Math.PI / 2);
       return {
         width: len,
         list: [
-          rect(len, 18, (t) => ({ x: cx, y: cy, a: t * spin }), x + len),
-          rect(len, 18, (t) => ({ x: cx, y: cy, a: t * spin + Math.PI / 2 }), x + len),
+          rect(len, 18, (t) => ({ x: cx, y: MID, a: t * spin + phase }), x + len),
+          rect(len, 18, (t) => ({ x: cx, y: MID, a: t * spin + phase + Math.PI / 2 }), x + len),
         ],
       };
     }
 
-    // 5. ぐるぐる回る玉
+    // 5. ぐるぐる回る玉（玉が上下の壁すれすれを回る）
     function orbit(x) {
-      const R = rand(95, 120);
-      const cx = x + R + 20;
-      const cy = rand(TOP + R + 25, BOTTOM - R - 25);
-      const speed = pick([-1, 1]) * rand(0.025, 0.04);
+      const ballR = 20;
+      const R = HALF - ballR;
+      const cx = x + HALF;
+      const speed = pick([-1, 1]) * rand(0.008, 0.012);
       const n = pick([3, 4, 5]);
-      const list = [circle(14, () => ({ x: cx, y: cy, a: 0 }), cx + R + 20)];
+      const end = x + HALF * 2;
+      const list = [circle(14, () => ({ x: cx, y: MID, a: 0 }), end)];
       for (let i = 0; i < n; i++) {
         const offset = (Math.PI * 2 * i) / n;
-        list.push(circle(20, (t) => ({
+        list.push(circle(ballR, (t) => ({
           x: cx + Math.cos(t * speed + offset) * R,
-          y: cy + Math.sin(t * speed + offset) * R,
+          y: MID + Math.sin(t * speed + offset) * R,
           a: 0,
-        }), cx + R + 20));
+        }), end));
       }
-      return { width: R * 2 + 40, list };
+      return { width: HALF * 2, list };
     }
 
     // 6. 振り子（天井または床からぶら下がる）
@@ -420,21 +442,20 @@
       };
     }
 
-    // 11. 風車（中心から羽が伸びて回る）
+    // 11. 風車（中心から3枚の羽が伸びて回る。羽の先は上下の壁まで届く）
     function windmill(x) {
-      const len = rand(135, 150);
-      const n = pick([3, 4]);
+      const len = HALF;
+      const n = 3;
       const cx = x + len;
-      // 羽の先と上下の壁の間に、点が通れるすき間（35以上）を残す
-      const cy = rand(TOP + len + 35, BOTTOM - len - 35);
-      const spin = pick([-1, 1]) * rand(0.015, 0.025);
+      const spin = pick([-1, 1]) * rand(0.005, 0.008);
+      const phase = rand(0, Math.PI * 2);
       const end = x + len * 2;
-      const list = [circle(20, () => ({ x: cx, y: cy, a: 0 }), end)];
+      const list = [circle(20, () => ({ x: cx, y: MID, a: 0 }), end)];
       for (let i = 0; i < n; i++) {
-        const offset = (Math.PI * 2 * i) / n;
+        const offset = (Math.PI * 2 * i) / n + phase;
         list.push(rect(len, 18, (t) => {
           const a = t * spin + offset;
-          return { x: cx + Math.cos(a) * len / 2, y: cy + Math.sin(a) * len / 2, a };
+          return { x: cx + Math.cos(a) * len / 2, y: MID + Math.sin(a) * len / 2, a };
         }, end));
       }
       return { width: len * 2, list };
@@ -461,17 +482,20 @@
       return { width, list };
     }
 
-    // 13. 歯車のように逆回転する2本の棒
+    // 13. 歯車のように逆回転する2本の棒（どちらも上下の壁まで届く）
+    //     2本の間には、点が待てるすき間（rest）を空けておく
     function gears(x) {
-      const len = 210;
-      const cy = rand(TOP + 140, BOTTOM - 140);
-      const spin = rand(0.02, 0.03);
-      const end = x + len * 2 + 10;
+      const len = HALF * 2;
+      const rest = 90;
+      const spin = rand(0.006, 0.009);
+      const phase = rand(0, Math.PI);
+      const width = len * 2 + rest;
+      const end = x + width;
       return {
-        width: len * 2 + 10,
+        width,
         list: [
-          rect(len, 18, (t) => ({ x: x + len / 2, y: cy, a: t * spin }), end),
-          rect(len, 18, (t) => ({ x: x + len * 1.5 + 10, y: cy, a: -t * spin + Math.PI / 2 }), end),
+          rect(len, 18, (t) => ({ x: x + HALF, y: MID, a: t * spin + phase }), end),
+          rect(len, 18, (t) => ({ x: x + len + rest + HALF, y: MID, a: -t * spin - phase + Math.PI / 2 }), end),
         ],
       };
     }
@@ -512,27 +536,28 @@
       };
     }
 
-    // 16. すき間のある回転リング
+    // 16. すき間のある回転リング（上下の壁まで届く大きな輪）
+    //     向かい合う2か所に入り口があり、入り口が左右に来たときに通りぬけられる
     function ring(x) {
-      const R = 120;
-      const slots = 16;
+      const ballR = 16;
+      const R = HALF - ballR;
+      const slots = 30; // 玉どうしのすき間は点より狭いので、入り口以外は通れない
       const gapStart = Math.floor(rand(0, slots));
-      const cx = x + R + 10;
-      const cy = (TOP + BOTTOM) / 2 + rand(-20, 20);
-      const spin = pick([-1, 1]) * rand(0.01, 0.018);
-      const end = x + R * 2 + 20;
+      const cx = x + HALF;
+      const spin = pick([-1, 1]) * rand(0.006, 0.009);
+      const end = x + HALF * 2;
       const list = [];
       for (let i = 0; i < slots; i++) {
-        // 3つ分だけ玉を抜いて入り口を作る
-        if ((i - gapStart + slots) % slots < 3) continue;
+        // 向かい合う2か所で、3つ分ずつ玉を抜いて入り口を作る
+        if ((i - gapStart + slots) % (slots / 2) < 3) continue;
         const offset = (Math.PI * 2 * i) / slots;
-        list.push(circle(14, (t) => ({
+        list.push(circle(ballR, (t) => ({
           x: cx + Math.cos(t * spin + offset) * R,
-          y: cy + Math.sin(t * spin + offset) * R,
+          y: MID + Math.sin(t * spin + offset) * R,
           a: 0,
         }), end));
       }
-      return { width: R * 2 + 20, list };
+      return { width: HALF * 2, list };
     }
 
     // 17. ベルトコンベア（上下に流れ続けるブロックの列）
@@ -692,6 +717,8 @@
       for (const o of obstacles) {
         if (hits(o, dot.x, dot.y, DOT_R)) { gameOver(); return; }
       }
+      // 飛行船とレーザー（最終ステージだけ）
+      if (STAGES[stageIndex].ship && updateShip()) { gameOver(); return; }
 
       // ゴールテープを通りすぎたらクリア
       if (dot.x - DOT_R > goalX + 20) {
@@ -700,6 +727,135 @@
         cleared[stageIndex] = true;
         localStorage.setItem("dotRunCleared", JSON.stringify(cleared));
       }
+    }
+
+    // 飛行船を動かしてレーザーを撃つ。点が飛行船かレーザーに当たったら true を返す
+    function updateShip() {
+      const sx = dot.x - camX; // 点の画面上の位置
+      const sy = dot.y;
+
+      if (ship.mode === "waiting") {
+        // ステージの半分まで進んだら、まず「WARNING」を出す
+        if (camX >= (goalX - 200) * SHIP_START) {
+          ship.mode = "warning";
+          ship.timer = 0;
+        }
+        return false;
+      }
+      ship.timer++;
+      if (ship.mode === "warning") {
+        if (ship.timer >= 60) { ship.mode = "entering"; ship.timer = 0; }
+        return false;
+      }
+      if (ship.mode === "entering") {
+        // 画面の左の外から、だんだんゆっくりになりながら入ってくる
+        const p = Math.min(1, ship.timer / SHIP_ENTER);
+        const ease = 1 - (1 - p) * (1 - p);
+        ship.x = -SHIP_RX * 2 + (SHIP_X + SHIP_RX * 2) * ease;
+        if (p >= 1) { ship.mode = "cool"; ship.timer = 0; }
+      } else {
+        // ねらいが固定されている間以外は、点の高さに合わせて上下に追いかける
+        const locked = ship.mode === "aim" && ship.timer > SHIP_AIM - SHIP_LOCK;
+        if (!locked) {
+          ship.y += Math.max(-SHIP_FOLLOW, Math.min(SHIP_FOLLOW, sy - ship.y));
+          ship.y = Math.max(TOP + SHIP_RY + 5, Math.min(BOTTOM - SHIP_RY - 5, ship.y));
+        }
+        const gunX = ship.x + SHIP_RX;
+        if (ship.mode === "cool" && ship.timer >= SHIP_COOL) {
+          ship.mode = "aim";
+          ship.timer = 0;
+        } else if (ship.mode === "aim") {
+          if (!locked) ship.angle = Math.atan2(sy - ship.y, sx - gunX);
+          if (ship.timer >= SHIP_AIM) {
+            // 発射！
+            lasers.push({
+              x: gunX, y: ship.y,
+              ux: Math.cos(ship.angle), uy: Math.sin(ship.angle),
+            });
+            ship.mode = "cool";
+            ship.timer = 0;
+          }
+        }
+      }
+
+      // レーザーを進め、画面の外に出たものを消す
+      for (const l of lasers) {
+        l.x += l.ux * LASER_SPEED;
+        l.y += l.uy * LASER_SPEED;
+      }
+      lasers = lasers.filter((l) => l.x > -60 && l.x < W + 60 && l.y > -60 && l.y < H + 60);
+
+      // 飛行船との当たり判定（だ円を点の半径の分だけ大きくして判定）
+      const ex = (sx - ship.x) / (SHIP_RX + DOT_R);
+      const ey = (sy - ship.y) / (SHIP_RY + DOT_R);
+      if (ex * ex + ey * ey < 1) return true;
+
+      // レーザーとの当たり判定（レーザーは線分なので、線分と点の距離を調べる）
+      for (const l of lasers) {
+        const bx = l.x - l.ux * LASER_LEN, by = l.y - l.uy * LASER_LEN;
+        const k = Math.max(0, Math.min(LASER_LEN, (sx - bx) * l.ux + (sy - by) * l.uy));
+        if (Math.hypot(sx - (bx + l.ux * k), sy - (by + l.uy * k)) < DOT_R + 2) return true;
+      }
+      return false;
+    }
+
+    // 飛行船・予告線・レーザー・WARNING の表示（画面上の座標で描く）
+    function drawShip() {
+      if (!STAGES[stageIndex].ship || ship.mode === "waiting") return;
+
+      // WARNING（点滅）
+      if (ship.mode === "warning" || ship.mode === "entering") {
+        if (Math.floor(ship.timer / 10) % 2 === 0) {
+          ctx.fillStyle = "#d33";
+          ctx.font = "bold 28px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("WARNING！ 後ろから飛行船が来る！", W / 2, 70);
+        }
+        if (ship.mode === "warning") return;
+      }
+
+      // ねらいの予告線（向きが固定されると速く点滅する）
+      if (ship.mode === "aim") {
+        const locked = ship.timer > SHIP_AIM - SHIP_LOCK;
+        ctx.strokeStyle = locked && t % 6 < 3 ? "rgba(221, 51, 51, 0.9)" : "rgba(221, 51, 51, 0.35)";
+        ctx.lineWidth = locked ? 2 : 1;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(ship.x + SHIP_RX, ship.y);
+        ctx.lineTo(ship.x + SHIP_RX + Math.cos(ship.angle) * 1000, ship.y + Math.sin(ship.angle) * 1000);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // レーザー
+      ctx.strokeStyle = "#d33";
+      ctx.lineWidth = 5;
+      ctx.lineCap = "round";
+      for (const l of lasers) {
+        ctx.beginPath();
+        ctx.moveTo(l.x, l.y);
+        ctx.lineTo(l.x - l.ux * LASER_LEN, l.y - l.uy * LASER_LEN);
+        ctx.stroke();
+      }
+      ctx.lineCap = "butt";
+
+      // 飛行船（黒いだ円の船体＋後ろの羽＋前の赤い砲台）
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.moveTo(ship.x - SHIP_RX + 6, ship.y - 6);
+      ctx.lineTo(ship.x - SHIP_RX - 10, ship.y - SHIP_RY - 6);
+      ctx.lineTo(ship.x - SHIP_RX + 22, ship.y - 8);
+      ctx.moveTo(ship.x - SHIP_RX + 6, ship.y + 6);
+      ctx.lineTo(ship.x - SHIP_RX - 10, ship.y + SHIP_RY + 6);
+      ctx.lineTo(ship.x - SHIP_RX + 22, ship.y + 8);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(ship.x, ship.y, SHIP_RX, SHIP_RY, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#d33";
+      ctx.beginPath();
+      ctx.arc(ship.x + SHIP_RX - 10, ship.y, 5, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     function gameOver() {
@@ -833,6 +989,7 @@
 
       ctx.restore();
 
+      drawShip();
       drawWalls();
 
       // ステージ番号
