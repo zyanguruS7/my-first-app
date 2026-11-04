@@ -735,7 +735,7 @@
       const sy = dot.y;
 
       if (ship.mode === "waiting") {
-        // ステージの半分まで進んだら、まず「WARNING」を出す
+        // ステージの半分まで進んだら、まず「Warning」を出す
         if (camX >= (goalX - 200) * SHIP_START) {
           ship.mode = "warning";
           ship.timer = 0;
@@ -799,17 +799,17 @@
       return false;
     }
 
-    // 飛行船・予告線・レーザー・WARNING の表示（画面上の座標で描く）
+    // 飛行船・予告線・レーザー・Warning の表示（画面上の座標で描く）
     function drawShip() {
       if (!STAGES[stageIndex].ship || ship.mode === "waiting") return;
 
-      // WARNING（点滅）
+      // Warning（点滅）
       if (ship.mode === "warning" || ship.mode === "entering") {
         if (Math.floor(ship.timer / 10) % 2 === 0) {
           ctx.fillStyle = "#d33";
-          ctx.font = "bold 28px sans-serif";
+          ctx.font = "bold 40px sans-serif";
           ctx.textAlign = "center";
-          ctx.fillText("WARNING！ 後ろから飛行船が来る！", W / 2, 70);
+          ctx.fillText("Warning", W / 2, 80);
         }
         if (ship.mode === "warning") return;
       }
