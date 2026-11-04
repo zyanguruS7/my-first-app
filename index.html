@@ -278,48 +278,48 @@
 
     // 3. 回転する棒
     function spinningBar(x) {
-      const len = rand(160, 230);
-      const cy = rand(TOP + len / 2 - 20, BOTTOM - len / 2 + 20);
+      const len = rand(230, 290);
+      const cy = rand(TOP + len / 2 - 40, BOTTOM - len / 2 + 40);
       const spin = pick([-1, 1]) * rand(0.015, 0.03);
       const cx = x + len / 2;
       return {
         width: len,
-        list: [rect(len, 16, (t) => ({ x: cx, y: cy, a: t * spin }), x + len)],
+        list: [rect(len, 20, (t) => ({ x: cx, y: cy, a: t * spin }), x + len)],
       };
     }
 
     // 4. 回転する十字
     function spinningCross(x) {
-      const len = rand(150, 190);
-      const cy = rand(TOP + 100, BOTTOM - 100);
+      const len = rand(210, 250);
+      const cy = rand(TOP + 130, BOTTOM - 130);
       const spin = pick([-1, 1]) * rand(0.012, 0.022);
       const cx = x + len / 2;
       return {
         width: len,
         list: [
-          rect(len, 14, (t) => ({ x: cx, y: cy, a: t * spin }), x + len),
-          rect(len, 14, (t) => ({ x: cx, y: cy, a: t * spin + Math.PI / 2 }), x + len),
+          rect(len, 18, (t) => ({ x: cx, y: cy, a: t * spin }), x + len),
+          rect(len, 18, (t) => ({ x: cx, y: cy, a: t * spin + Math.PI / 2 }), x + len),
         ],
       };
     }
 
     // 5. ぐるぐる回る玉
     function orbit(x) {
-      const R = rand(60, 85);
-      const cx = x + R + 15;
-      const cy = rand(TOP + R + 20, BOTTOM - R - 20);
+      const R = rand(95, 120);
+      const cx = x + R + 20;
+      const cy = rand(TOP + R + 25, BOTTOM - R - 25);
       const speed = pick([-1, 1]) * rand(0.025, 0.04);
-      const n = pick([2, 3, 4]);
-      const list = [circle(10, () => ({ x: cx, y: cy, a: 0 }), cx + R + 15)];
+      const n = pick([3, 4, 5]);
+      const list = [circle(14, () => ({ x: cx, y: cy, a: 0 }), cx + R + 20)];
       for (let i = 0; i < n; i++) {
         const offset = (Math.PI * 2 * i) / n;
-        list.push(circle(14, (t) => ({
+        list.push(circle(20, (t) => ({
           x: cx + Math.cos(t * speed + offset) * R,
           y: cy + Math.sin(t * speed + offset) * R,
           a: 0,
-        }), cx + R + 15));
+        }), cx + R + 20));
       }
-      return { width: R * 2 + 30, list };
+      return { width: R * 2 + 40, list };
     }
 
     // 6. 振り子（天井または床からぶら下がる）
@@ -422,16 +422,17 @@
 
     // 11. 風車（中心から羽が伸びて回る）
     function windmill(x) {
-      const len = rand(100, 130);
+      const len = rand(135, 150);
       const n = pick([3, 4]);
       const cx = x + len;
-      const cy = rand(TOP + len, BOTTOM - len);
+      // 羽の先と上下の壁の間に、点が通れるすき間（35以上）を残す
+      const cy = rand(TOP + len + 35, BOTTOM - len - 35);
       const spin = pick([-1, 1]) * rand(0.015, 0.025);
       const end = x + len * 2;
-      const list = [circle(16, () => ({ x: cx, y: cy, a: 0 }), end)];
+      const list = [circle(20, () => ({ x: cx, y: cy, a: 0 }), end)];
       for (let i = 0; i < n; i++) {
         const offset = (Math.PI * 2 * i) / n;
-        list.push(rect(len, 14, (t) => {
+        list.push(rect(len, 18, (t) => {
           const a = t * spin + offset;
           return { x: cx + Math.cos(a) * len / 2, y: cy + Math.sin(a) * len / 2, a };
         }, end));
@@ -462,15 +463,15 @@
 
     // 13. 歯車のように逆回転する2本の棒
     function gears(x) {
-      const len = 160;
-      const cy = rand(TOP + 120, BOTTOM - 120);
+      const len = 210;
+      const cy = rand(TOP + 140, BOTTOM - 140);
       const spin = rand(0.02, 0.03);
       const end = x + len * 2 + 10;
       return {
         width: len * 2 + 10,
         list: [
-          rect(len, 14, (t) => ({ x: x + len / 2, y: cy, a: t * spin }), end),
-          rect(len, 14, (t) => ({ x: x + len * 1.5 + 10, y: cy, a: -t * spin + Math.PI / 2 }), end),
+          rect(len, 18, (t) => ({ x: x + len / 2, y: cy, a: t * spin }), end),
+          rect(len, 18, (t) => ({ x: x + len * 1.5 + 10, y: cy, a: -t * spin + Math.PI / 2 }), end),
         ],
       };
     }
@@ -513,8 +514,8 @@
 
     // 16. すき間のある回転リング
     function ring(x) {
-      const R = 90;
-      const slots = 14;
+      const R = 120;
+      const slots = 16;
       const gapStart = Math.floor(rand(0, slots));
       const cx = x + R + 10;
       const cy = (TOP + BOTTOM) / 2 + rand(-20, 20);
@@ -525,7 +526,7 @@
         // 3つ分だけ玉を抜いて入り口を作る
         if ((i - gapStart + slots) % slots < 3) continue;
         const offset = (Math.PI * 2 * i) / slots;
-        list.push(circle(10, (t) => ({
+        list.push(circle(14, (t) => ({
           x: cx + Math.cos(t * spin + offset) * R,
           y: cy + Math.sin(t * spin + offset) * R,
           a: 0,
@@ -597,13 +598,14 @@
     function tunnel(x) {
       const segments = 8;
       const segW = 40;
-      const gap = 140 * gapScale;
+      const gap = 190 * gapScale;
       const phase = rand(0, Math.PI * 2);
       const mid = (TOP + BOTTOM) / 2;
       const end = x + segments * segW;
       const list = [];
       for (let i = 0; i < segments; i++) {
-        const cy = mid + Math.sin(i * 0.7 + phase) * 110;
+        // 段差がきつくなりすぎないよう、1段ごとの上下のずれを小さめにする
+        const cy = mid + Math.sin(i * 0.55 + phase) * 110;
         const sx = x + segW / 2 + i * segW;
         list.push(rect(segW + 1, H, () => ({ x: sx, y: cy - gap / 2 - H / 2, a: 0 }), end));
         list.push(rect(segW + 1, H, () => ({ x: sx, y: cy + gap / 2 + H / 2, a: 0 }), end));
